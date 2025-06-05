@@ -14,9 +14,10 @@ export const SuggestionCategorySchema = z.enum([
 
 export type SuggestionCategory = z.infer<typeof SuggestionCategorySchema>;
 
+// Enhanced to support phrase targeting
 export const SuggestionTargetSchema = z.object({
-  type: z.enum(["word", "sentence"]),
-  id: z.string(), // e.g., "word_5" or "sentence_2"
+  type: z.enum(["word", "phrase", "sentence"]),
+  id: z.string(), // e.g., "word_5", "word_3:word_7", or "sentence_2"
 });
 
 export const SuggestionSchema = z.object({

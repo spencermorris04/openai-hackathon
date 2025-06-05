@@ -54,18 +54,63 @@ export function useWritingCoach(
         throw new Error(`API error: ${response.status} ${response.statusText}`);
       }
 
-      // Fix: Extract suggestions from response object
       const responseData = (await response.json()) as SuggestionsResponse;
       const newSuggestions = responseData.suggestions || [];
       
       console.log("[coach] Received suggestions:", newSuggestions);
 
-      // Filter out suggestions for text that no longer exists
+      // Enhanced validation for word, phrase, and sentence suggestions
       const validSuggestions = newSuggestions.filter(suggestion => {
         if (suggestion.target.type === "word") {
-          return textData.words[suggestion.target.id] !== undefined;
+          const exists = textData.words[suggestion.target.id] !== undefined;
+          console.log(`[coach] Validating word ${suggestion.target.id}:`, { exists });
+          return exists;
+        } else if (suggestion.target.type === "phrase") {
+          // Parse phrase range like "word_3:word_7"
+          try {
+            if (!suggestion.target.id) {
+              console.warn(`[coach] Missing phrase id`);
+              return false;
+            }
+            const ids = suggestion.target.id.split(':');
+            if (ids.length !== 2) {
+              console.warn(`[coach] Invalid phrase id format: ${suggestion.target.id}`);
+              return false;
+            }
+            const [startId, endId] = ids;
+            if (!startId || !endId) {
+              console.warn(`[coach] Undefined start or end id in phrase: ${suggestion.target.id}`);
+              return false;
+            }
+            const startNum = parseInt(startId.replace('word_', ''));
+            const endNum = parseInt(endId.replace('word_', ''));
+            if (isNaN(startNum) || isNaN(endNum)) {
+              console.warn(`[coach] Invalid start or end number in phrase: ${suggestion.target.id}`);
+              return false;
+            }
+            
+            // Validate range makes sense
+            if (startNum > endNum || startNum < 1) {
+              console.warn(`[coach] Invalid phrase range: ${suggestion.target.id}`);
+              return false;
+            }
+            
+            // Check all words in range exist
+            const allWordsExist = Array.from({length: endNum - startNum + 1}, (_, i) => startNum + i)
+              .every(wordNum => textData.words[`word_${wordNum}`] !== undefined);
+            
+            console.log(`[coach] Validating phrase ${suggestion.target.id}:`, { 
+              startNum, endNum, allWordsExist 
+            });
+            return allWordsExist;
+          } catch (error) {
+            console.error(`[coach] Error parsing phrase range ${suggestion.target.id}:`, error);
+            return false;
+          }
         } else if (suggestion.target.type === "sentence") {
-          return textData.sentences[suggestion.target.id] !== undefined;
+          const exists = textData.sentences[suggestion.target.id] !== undefined;
+          console.log(`[coach] Validating sentence ${suggestion.target.id}:`, { exists });
+          return exists;
         }
         return false;
       });
@@ -89,7 +134,6 @@ export function useWritingCoach(
     if (!parsed) return;
 
     const currentSentenceKey = `sentence_${parsed.sentenceCount}`;
-    const lastWord = parsed.words[`word_${parsed.wordCount}`] || "";
     
     // Helper function to check if last sentence is complete
     const isLastSentenceComplete = () => {
@@ -121,7 +165,7 @@ export function useWritingCoach(
       lastProcessedSentenceKey.current = currentSentenceKey;
       lastProcessedWordCount.current = parsed.wordCount;
       processText(parsed);
-    }, 500); // Slightly longer debounce for complete sentences
+    }, 800); // Optimized debounce timing
 
     // Cleanup function
     return () => {

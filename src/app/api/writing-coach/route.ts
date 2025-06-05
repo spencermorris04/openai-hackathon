@@ -18,41 +18,72 @@ import type { ParsedText } from "~/utils/textParser";
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 /* ------------------------------------------------------------------
-   PROMPTS
+   ENHANCED PROMPTS
 ------------------------------------------------------------------ */
 
 const SYSTEM_PROMPT = `
-You are **Musephoria's Writing Coach**. Your job is to turn musicians' raw
-peer-feedback into precise, actionable, technically accurate comments.
+You are **Musephoria's Writing Coach**. Your job is to help musicians give better, more actionable peer feedback.
 
 INPUT FORMAT
 ------------
-You will receive structured text data with:
+You receive structured text data with:
 - words: object mapping "word_1", "word_2", etc. to actual words
 - sentences: object mapping "sentence_1", "sentence_2", etc. to full sentences  
 - wordToSentence: mapping showing which sentence each word belongs to
 
 OUTPUT FORMAT
 -------------
-Return *only* JSON that matches the schema you will receive.
-If no changes are needed, return: { "suggestions": [] }
+Return *only* JSON matching the schema. If no improvements needed: { "suggestions": [] }
 
-SUGGESTION RULES
-----------------
-• Target specific word IDs (e.g., "word_5") or sentence IDs (e.g., "sentence_2")
-• Pinpoint vague or shallow phrases and recommend richer detail
-• Employ correct music-production terminology (EQ, compression, rhythm, etc.)
-• Maintain the author's voice and tone; don't rewrite everything
-• Do *not* fix spelling unless clarity suffers
-• Each suggestion object must follow:
-  {
-    target: { type: "word"|"sentence", id: "word_12" },
-    replacement: "new text",
-    explanation: "very short reason",
-    category: <one of the allowed enums>
-  }
+SUGGESTION TYPES & RULES
+------------------------
 
-IMPORTANT: Only suggest improvements for word/sentence IDs that actually exist in the input data.
+**WORD SUGGESTIONS** (type: "word", id: "word_5")
+• ONLY for overly harsh/abrasive language that hurts constructiveness
+• replacement: Better word choice ("sucks" → "needs improvement", "terrible" → "could be stronger")
+• explanation: Brief reason for the change ("Less harsh language")
+• Target: specific word ID
+
+**PHRASE SUGGESTIONS** (type: "phrase", id: "word_3:word_7") 
+• For improving clarity and flow of 2-6 word phrases
+• replacement: Clearer phrasing ("bring the volume up" → "increase the volume")
+• explanation: Brief reason ("Clearer phrasing")
+• Target: word range like "word_3:word_7"
+
+**SENTENCE SUGGESTIONS** (type: "sentence", id: "sentence_2")
+• For nudging users to go deeper and be more specific with their feedback
+• replacement: IMPROVED VERSION of their original sentence with more specific details
+• explanation: COACHING QUESTION to help them think about specificity
+
+EXAMPLES for sentence suggestions:
+
+User writes: "The vocals suck"
+• replacement: "The vocals need improvement in the 2-3kHz range for better clarity and presence"
+• explanation: "What specific vocal issues do you hear - clarity, dynamics, or mix placement?"
+
+User writes: "Mix is too loud"  
+• replacement: "The mix level should be reduced by about 3-5dB, particularly the drum bus which is overpowering the vocals"
+• explanation: "How much quieter would help? Which elements specifically feel too loud?"
+
+User writes: "Sounds off"
+• replacement: "The low-mid frequencies around 200-400Hz feel muddy and could use some EQ reduction"
+• explanation: "Which frequencies feel problematic? Is it muddiness or harshness?"
+
+CRITICAL RULES
+--------------
+• For SENTENCE suggestions: replacement = better version of their sentence, explanation = coaching question
+• Never fix spelling/grammar unless it severely impedes understanding
+• Never change technical terms unless incorrect
+• Use exact word/sentence IDs from the input data
+• Keep explanations brief but specific
+
+Each suggestion format:
+{
+  target: { type: "word"|"phrase"|"sentence", id: "word_12" or "word_3:word_7" or "sentence_1" },
+  replacement: "improved version of their text",
+  explanation: "coaching question or brief reason",
+  category: <enum value>
+}
 `.trim();
 
 /* ------------------------------------------------------------------
@@ -87,6 +118,34 @@ function reconstructText(parsed: Partial<ParsedText>): string {
   return sentences.join(" ");
 }
 
+function validateSuggestionTargets(suggestions: any[], parsedText: Partial<ParsedText>): any[] {
+  return suggestions.filter(suggestion => {
+    if (suggestion.target.type === "word") {
+      return parsedText.words?.[suggestion.target.id] !== undefined;
+    } else if (suggestion.target.type === "phrase") {
+      // Validate phrase range like "word_3:word_7"
+      try {
+        const [startId, endId] = suggestion.target.id.split(':');
+        const startNum = parseInt(startId.replace('word_', ''));
+        const endNum = parseInt(endId.replace('word_', ''));
+        
+        // Check that all words in the range exist
+        for (let i = startNum; i <= endNum; i++) {
+          if (!parsedText.words?.[`word_${i}`]) {
+            return false;
+          }
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    } else if (suggestion.target.type === "sentence") {
+      return parsedText.sentences?.[suggestion.target.id] !== undefined;
+    }
+    return false;
+  });
+}
+
 /* ------------------------------------------------------------------
    ROUTE HANDLER
 ------------------------------------------------------------------ */
@@ -116,10 +175,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ suggestions: [] });
     }
 
+    console.log("[writing-coach] Processing text:", originalText);
+
     /* —— Call OpenAI Responses API ——————————————— */
     const resp = await openai.responses.parse({
-      model: "gpt-4o-mini",
-      temperature: 0.3,
+      model: "gpt-4.1",
+      temperature: 0.2, // Lower temperature for more consistent suggestions
       input: [
         { role: "system", content: SYSTEM_PROMPT },
         {
@@ -135,7 +196,7 @@ export async function POST(req: Request) {
           content:
             `STRUCTURED FEEDBACK DATA:\n\n${JSON.stringify(parsedText, null, 2)}\n\n` +
             `ORIGINAL TEXT: "${originalText}"\n\n` +
-            `Analyze this feedback and provide suggestions using the exact word/sentence IDs from the structured data.`,
+            `Analyze this feedback and provide suggestions using the exact word/sentence IDs from the structured data. Focus on making the feedback more constructive and actionable.`,
         },
       ],
       text: {
@@ -156,14 +217,9 @@ export async function POST(req: Request) {
     const { suggestions } = resp.output_parsed as SuggestionsResponse;
     
     // Validate that all suggested IDs exist in the input data
-    const validSuggestions = suggestions.filter(suggestion => {
-      if (suggestion.target.type === "word") {
-        return parsedText.words?.[suggestion.target.id] !== undefined;
-      } else if (suggestion.target.type === "sentence") {
-        return parsedText.sentences?.[suggestion.target.id] !== undefined;
-      }
-      return false;
-    });
+    const validSuggestions = validateSuggestionTargets(suggestions, parsedText);
+    
+    console.log("[writing-coach] Generated suggestions:", validSuggestions);
     
     return NextResponse.json({ suggestions: validSuggestions });
   } catch (err) {
