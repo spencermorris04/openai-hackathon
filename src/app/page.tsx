@@ -2,7 +2,7 @@
 "use client";
 
 import { useState } from "react";
-import EnhancedFeedbackForm from "~/components/EnhancedFeedbackForm";
+import EnhancedFeedbackForm from "~/components/ModerationFeedbackForm";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "~/components/ui/card";
 import { Badge } from "~/components/ui/badge";
 import { Brain, Shield, Target, MessageCircle, Users, Zap, CheckCircle2, AlertTriangle, XCircle } from "lucide-react";
